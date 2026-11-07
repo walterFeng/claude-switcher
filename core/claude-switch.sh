@@ -1074,6 +1074,29 @@ route_ok() {
     [ -z "$ROUTE_MISSED" ]
 }
 
+# 地区判定: 系统区域格式等于 LOCALE_TARGET → ok;
+# 或系统区域格式的地区部分与目标一致,且 Claude 单独首选语言为目标语言(如 en 或 en-US) → ok:按 Claude 单独语言;
+# 其余 → fail:<系统区域格式>
+locale_status() {
+    local locale lang region applang
+    locale=$(defaults read -g AppleLocale 2>/dev/null)
+    if [ -n "$locale" ] && [ "$locale" = "$LOCALE_TARGET" ]; then
+        echo "ok"
+        return
+    fi
+    lang=${LOCALE_TARGET%%_*}
+    region=${LOCALE_TARGET#*_}
+    applang=$(defaults read com.anthropic.claudefordesktop AppleLanguages 2>/dev/null | sed -n '2p' | tr -d ' ,"')
+    case "$locale" in
+        *_"$region")
+            if [ "$applang" = "$lang" ] || [ "$applang" = "$lang-$region" ]; then
+                echo "ok:按 Claude 单独语言($applang)"
+                return
+            fi ;;
+    esac
+    echo "fail:$locale"
+}
+
 # 国家代码 → 默认 IANA 时区(cloudflare trace 等来源不带时区时使用)
 default_tz_for() {
     case "$1" in
@@ -1247,8 +1270,8 @@ check() {
     tz=$(readlink /etc/localtime 2>/dev/null)
     [ "$tz" = "/var/db/timezone/zoneinfo/$TZ_TARGET" ] || fails="$fails;时区异常($tz)"
 
-    locale=$(defaults read -g AppleLocale 2>/dev/null)
-    [ "$locale" = "$LOCALE_TARGET" ] || fails="$fails;地区异常($locale)"
+    locale_st=$(locale_status)
+    case "$locale_st" in fail:*) fails="$fails;地区异常(${locale_st#fail:})" ;; esac
 
     v6=$(networksetup -getinfo Wi-Fi 2>/dev/null | grep -i '^IPv6:')
     echo "$v6" | grep -qi 'off' || fails="$fails;IPv6未关闭"
@@ -1428,8 +1451,7 @@ checkdetail() {
     fi
     tz=$(readlink /etc/localtime 2>/dev/null)
     if [ "$tz" = "/var/db/timezone/zoneinfo/$TZ_TARGET" ]; then echo '时区=ok'; else echo "时区=fail:$tz"; fi
-    locale=$(defaults read -g AppleLocale 2>/dev/null)
-    if [ "$locale" = "$LOCALE_TARGET" ]; then echo '地区=ok'; else echo "地区=fail:$locale"; fi
+    echo "地区=$(locale_status)"
     v6=$(networksetup -getinfo Wi-Fi 2>/dev/null | grep -i '^IPv6:')
     if echo "$v6" | grep -qi 'off'; then echo 'IPv6=ok:已关闭'; else echo 'IPv6=fail:未关闭'; fi
     if check_disabled "DNS"; then
@@ -1666,8 +1688,7 @@ ASEOF
     fi
 
     # B4. 地区格式(用户级,无需密码)
-    locale=$(defaults read -g AppleLocale 2>/dev/null)
-    if [ "$locale" != "$LOCALE_TARGET" ]; then
+    if [[ "$(locale_status)" == fail:* ]]; then
         defaults write -g AppleLocale "$LOCALE_TARGET"
         echo "FIX:地区格式 → $LOCALE_TARGET ✓"
     fi
@@ -1795,8 +1816,8 @@ set_region() {
         "$0"
     COUNTRY_TARGET="$ctry"; TZ_TARGET="$ntz"; LOCALE_TARGET="$nlocale"
 
-    # 地区格式(用户级,无需密码)
-    defaults write -g AppleLocale "$nlocale"
+    # 地区格式(用户级,无需密码);已满足地区判定(含 Claude 单独语言方式)时保留系统区域格式
+    [[ "$(locale_status)" == fail:* ]] && defaults write -g AppleLocale "$nlocale"
 
     # 时区(需管理员权限,会弹一次授权框);看门狗脚本在 root 目录下,顺道用同一次授权同步目标值
     WD="/Library/Application Support/claude-switcher/tz-watchdog.sh"
