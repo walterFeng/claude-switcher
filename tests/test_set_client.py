@@ -43,7 +43,7 @@ class SetClientTests(unittest.TestCase):
         return ""
 
     def test_switches_mode(self):
-        for mode in ("shadowrocket", "sing-box", "flclash", "bettbox", "auto", "clash-verge"):
+        for mode in ("shadowrocket", "sing-box", "flclash", "bettbox", "mihomo-party", "auto", "clash-verge"):
             result = self.run_set(mode)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertEqual(self.current_mode(), mode)
@@ -69,7 +69,7 @@ class SetClientTests(unittest.TestCase):
             (self.fakebin / name).chmod(0o755)
         env = dict(os.environ, HOME=str(self.root), CLAUDE_SWITCHER_TEST_ROOT=str(self.root),
                    PATH=f"{self.fakebin}:/usr/bin:/bin")
-        run = subprocess.run(["/bin/bash", str(script)], env=env, capture_output=True, text=True, timeout=5)
+        run = subprocess.run(["/bin/bash", str(script)], env=env, capture_output=True, text=True, timeout=15)
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
         self.assertFalse((self.root / "pkill-called").exists(),
                          "FlClash 在线时保镖不得按 Clash Verge 进程误杀 Claude")
@@ -92,7 +92,7 @@ class SetClientTests(unittest.TestCase):
                    PATH=f"{self.fakebin}:/usr/bin:/bin")
         # enable -n kill: 让脚本的 kill 走 PATH 桩而不是内建,便于断言目标 PID
         return subprocess.run(["/bin/bash", "-c", 'enable -n kill\n. "$1"', "guard", str(script)],
-                              env=env, capture_output=True, text=True, timeout=5)
+                              env=env, capture_output=True, text=True, timeout=15)
 
     def test_bodyguard_offline_kills_only_install_user_cli(self):
         script = self.install_guard("clash-verge")
@@ -218,6 +218,99 @@ class SetClientTests(unittest.TestCase):
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
         self.assertTrue((self.root / "pkill-called").exists(), "代理离线时仍须关闭桌面版 Claude")
         self.assertFalse((self.root / "kill-called").exists(), "没有 CLI 进程时不得调用 kill")
+
+    MIHOMO_PARTY_PS = "/Applications/Mihomo Party.app/Contents/Resources/sidecar/mihomo -d /tmp/work"
+
+    def mihomo_party_pgrep(self, running):
+        # 真实 pgrep 对伪造进程表做 ERE 匹配,验证脚本里的匹配式本身
+        table = self.MIHOMO_PARTY_PS if running else "/usr/sbin/unrelated"
+        self.stub("pgrep", "#!/bin/sh\n"
+                           "[ \"$1\" = \"-f\" ] || exit 1\n"
+                           f"printf '%s\\n' '{table}' | /usr/bin/grep -Eq \"$2\"\n")
+
+    def test_mihomo_party_bodyguard_online_with_198_19_tun(self):
+        script = self.install_guard("mihomo-party")
+        self.stub("ifconfig", "#!/bin/sh\necho 'inet 198.19.0.1 --> 198.19.0.1'\n")
+        self.mihomo_party_pgrep(running=True)
+        self.stub("pkill", "#!/bin/sh\ntouch \"$CLAUDE_SWITCHER_TEST_ROOT/pkill-called\"\n")
+        self.stub("id", "#!/bin/sh\necho 502\n")
+        self.stub("kill", "#!/bin/sh\ntouch \"$CLAUDE_SWITCHER_TEST_ROOT/kill-called\"\n")
+        self.stub("ps", "#!/bin/sh\necho '  101   502 claude          /usr/local/bin/claude'\n")
+        run = self.run_guard(script)
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertFalse((self.root / "kill-called").exists(), "Mihomo Party 在线时不得终止 CLI")
+        self.assertFalse((self.root / "pkill-called").exists(), "Mihomo Party 在线时不得终止桌面版")
+
+    def test_mihomo_party_bodyguard_offline_kills(self):
+        script = self.install_guard("mihomo-party")
+        self.stub("ifconfig", "#!/bin/sh\necho 'inet 198.19.0.1 --> 198.19.0.1'\n")
+        self.mihomo_party_pgrep(running=False)
+        self.stub("pkill", "#!/bin/sh\ntouch \"$CLAUDE_SWITCHER_TEST_ROOT/pkill-called\"\n")
+        self.stub("id", "#!/bin/sh\necho 502\n")
+        self.stub("kill", "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$CLAUDE_SWITCHER_TEST_ROOT/kill-args\"\n")
+        self.stub("ps", "#!/bin/sh\necho '  101   502 claude          /usr/local/bin/claude'\n")
+        run = self.run_guard(script)
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertEqual((self.root / "kill-args").read_text(encoding="utf-8").strip(), "-TERM 101",
+                         "Mihomo Party 内核不在时必须终止 CLI")
+
+    def test_bodyguard_tun_range_is_198_18_slash_15(self):
+        cases = {"inet 198.18.0.1": False, "inet 198.19.0.1": False,
+                 "inet 198.20.0.1": True, "inet 10.198.18.1": True}
+        for addr, should_kill in cases.items():
+            with self.subTest(addr=addr):
+                for name in ("pkill-called", "kill-args"):
+                    (self.root / name).unlink(missing_ok=True)
+                script = self.root / "installed-bodyguard.sh"
+                guard = (ROOT / "daemons" / "claude-bodyguard.sh").read_text(encoding="utf-8")
+                script.write_text(guard.replace("__HOME__", str(self.root))
+                                  .replace("__PROXY_MODE__", "auto"), encoding="utf-8")
+                (self.root / "Library" / "Logs").mkdir(parents=True, exist_ok=True)
+                self.stub("ifconfig", f"#!/bin/sh\necho '{addr}'\n")
+                self.stub("pgrep", "#!/bin/sh\nexit 1\n")
+                self.stub("id", "#!/bin/sh\necho 502\n")
+                self.stub("kill", "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$CLAUDE_SWITCHER_TEST_ROOT/kill-args\"\n")
+                self.stub("ps", "#!/bin/sh\necho '  101   502 claude          /usr/local/bin/claude'\n")
+                run = self.run_guard(script)
+                self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+                self.assertEqual((self.root / "kill-args").exists(), should_kill)
+
+    def core_probe(self, mode, ifconfig_out):
+        core = self.copy.read_text(encoding="utf-8")
+        tun_fn = re.search(r"(?m)^tun_up\(\) \{.*\}$", core).group(0)
+        pattern = re.search(r"(?m)^MIHOMO_PARTY_CORE=.*$", core).group(0)
+        alive_fn = re.search(r"(?ms)^proxy_alive\(\) \{\n.*?^\}", core).group(0)
+        harness = (f"PROXY_MODE=\"{mode}\"\nshadowrocket_up() {{ return 1; }}\n"
+                   f"{pattern}\n{tun_fn}\n{alive_fn}\n"
+                   "tun_up && echo tun=ok || echo tun=fail\n"
+                   "proxy_alive && echo core=ok || echo core=fail\n")
+        self.stub("ifconfig", f"#!/bin/sh\necho '{ifconfig_out}'\n")
+        env = dict(os.environ, HOME=str(self.root), PATH=f"{self.fakebin}:/usr/bin:/bin")
+        return subprocess.run(["/bin/bash", "-c", harness], env=env, text=True,
+                              capture_output=True, timeout=15).stdout
+
+    def test_core_recognizes_mihomo_party(self):
+        self.mihomo_party_pgrep(running=True)
+        out = self.core_probe("mihomo-party", "inet 198.19.0.1 --> 198.19.0.1")
+        self.assertIn("tun=ok", out)
+        self.assertIn("core=ok", out)
+        self.assertIn("core=ok", self.core_probe("auto", "inet 198.19.0.1"))
+        self.mihomo_party_pgrep(running=False)
+        out = self.core_probe("mihomo-party", "inet 198.20.0.1")
+        self.assertIn("tun=fail", out)
+        self.assertIn("core=fail", out)
+
+    def test_installer_detects_mihomo_party(self):
+        installer = (ROOT / "installer" / "安装.command").read_text(encoding="utf-8")
+        block = re.search(r'(?ms)^CLASH_DIR=.*?^echo "✓ 代理客户端: \$MODE"$', installer)
+        self.assertIsNotNone(block)
+        (self.root / "Library" / "Application Support" / "mihomo-party").mkdir(parents=True)
+        self.stub("scutil", "#!/bin/sh\nexit 0\n")
+        env = dict(os.environ, H=str(self.root), PATH=f"{self.fakebin}:/usr/bin:/bin")
+        run = subprocess.run(["/bin/bash", "-c", block.group(0)], env=env, text=True,
+                             capture_output=True, timeout=5, stdin=subprocess.DEVNULL)
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertIn("代理客户端: mihomo-party", run.stdout)
 
     def test_warns_when_installed_bodyguard_mode_stale(self):
         result = self.run_set("shadowrocket")

@@ -922,7 +922,7 @@ PY_CLASH_RULES
 fi
 
 # ============ 安装时可配置项(安装程序会自动改写) ============
-PROXY_MODE="clash-verge"       # 代理客户端: clash-verge|flclash|bettbox|shadowrocket|sing-box|clashx|surge|auto
+PROXY_MODE="clash-verge"       # 代理客户端: clash-verge|flclash|bettbox|mihomo-party|shadowrocket|sing-box|clashx|surge|auto
 PROXY_GROUP="IpEqual"          # Clash 代理组名(安装时自动探测)
 COUNTRY_TARGET="US"            # 目标出口国家(安装时按出口自动识别)
 TZ_TARGET="America/New_York"   # 锁定时区,应与出口IP所在城市一致
@@ -970,8 +970,11 @@ log_result() {
     "$0" _support log "$command" "$rc" "$(( ($(date +%s) - started) * 1000 ))" "$summary" >/dev/null 2>&1 || true
 }
 
-# TUN 在线判定:存在 fake-ip 网段地址即视为 TUN 已接管(兼容各种 TUN 设备名)
-tun_up() { ifconfig 2>/dev/null | grep -q 'inet 198\.18\.'; }
+# TUN 在线判定:存在 fake-ip 网段(198.18.0.0/15,即 198.18.x / 198.19.x)地址即视为 TUN 已接管(兼容各种 TUN 设备名)
+tun_up() { ifconfig 2>/dev/null | grep -Eq 'inet 198\.1[89]\.'; }
+
+# Mihomo Party(含更名后的 Clash Party)内核进程匹配式
+MIHOMO_PARTY_CORE='(Mihomo|Clash) Party\.app/Contents/Resources/sidecar/mihomo'
 
 # 代理客户端显示名(供检查细节输出)
 proxy_name() {
@@ -979,6 +982,7 @@ proxy_name() {
         clash-verge)  echo "Clash Verge" ;;
         flclash)      echo "FlClash" ;;
         bettbox)      echo "Bettbox" ;;
+        mihomo-party) echo "Mihomo Party" ;;
         shadowrocket) echo "Shadowrocket" ;;
         sing-box)     echo "sing-box" ;;
         clashx)       echo "ClashX" ;;
@@ -994,6 +998,7 @@ proxy_app_name() {
         clash-verge)  echo "Clash Verge" ;;
         flclash)      echo "FlClash" ;;
         bettbox)      echo "Bettbox" ;;
+        mihomo-party) echo "Mihomo Party" ;;
         shadowrocket) echo "Shadowrocket" ;;
         clashx)       echo "ClashX" ;;
         surge)        echo "Surge" ;;
@@ -1026,11 +1031,13 @@ proxy_alive() {
         clash-verge)  pgrep -f verge-mihomo >/dev/null 2>&1 ;;
         flclash)      pgrep -f FlClashCore >/dev/null 2>&1 || pgrep -x FlClash >/dev/null 2>&1 ;;
         bettbox)      pgrep -f BettboxCore >/dev/null 2>&1 || pgrep -x Bettbox >/dev/null 2>&1 ;;
+        mihomo-party) pgrep -f "$MIHOMO_PARTY_CORE" >/dev/null 2>&1 ;;
         shadowrocket) shadowrocket_up ;;
         sing-box)     pgrep -f sing-box >/dev/null 2>&1 ;;
         clashx)       clashx_alive ;;
         surge)        pgrep -f Surge >/dev/null 2>&1 ;;
         auto)         pgrep -f verge-mihomo >/dev/null 2>&1 || shadowrocket_up \
+                      || pgrep -f "$MIHOMO_PARTY_CORE" >/dev/null 2>&1 \
                       || pgrep -f sing-box >/dev/null 2>&1 \
                       || pgrep -f FlClashCore >/dev/null 2>&1 || pgrep -x FlClash >/dev/null 2>&1 \
                       || pgrep -f BettboxCore >/dev/null 2>&1 || pgrep -x Bettbox >/dev/null 2>&1 \
@@ -1053,14 +1060,14 @@ stun_ok() { merge_ok; }
 # 当前 Clash 模式(rule/global/direct);读取失败返回空
 clash_mode() { clash_rules mode 2>/dev/null; }
 
-# 置顶规则行为检测:三个生态域名全部解析到 fake-ip 段(198.18.x.x)即视为已置顶;未命中域名记入 ROUTE_MISSED
+# 置顶规则行为检测:三个生态域名全部解析到 fake-ip 段(198.18.0.0/15)即视为已置顶;未命中域名记入 ROUTE_MISSED
 route_ok() {
     ROUTE_MISSED=""
     local d a
     for d in claude.ai api.anthropic.com claudeusercontent.com; do
         a=$(dig +short +time=3 +tries=1 "$d" 2>/dev/null | head -1)
         case "$a" in
-            198.18.*) ;;
+            198.18.*|198.19.*) ;;
             *) ROUTE_MISSED="$ROUTE_MISSED $d" ;;
         esac
     done
@@ -1249,7 +1256,7 @@ check() {
     if ! check_disabled "DNS"; then
         dnsip=$(dig +short +time=3 +tries=1 claude.ai 2>/dev/null | head -1)
         case "$dnsip" in
-            198.18.*) ;;
+            198.18.*|198.19.*) ;;
             *) optional_failure "DNS未走隧道" ;;
         esac
     fi
@@ -1430,7 +1437,7 @@ checkdetail() {
     else
         dnsip=$(dig +short +time=3 +tries=1 claude.ai 2>/dev/null | head -1)
         case "$dnsip" in
-            198.18.*) optional_result "DNS" ok "走隧道" ;;
+            198.18.*|198.19.*) optional_result "DNS" ok "走隧道" ;;
             *) optional_result "DNS" fail "未走隧道(${dnsip:-空})" ;;
         esac
     fi
@@ -1721,8 +1728,8 @@ ASEOF
 set_client() {
     mode="${1:-}"
     case "$mode" in
-        clash-verge|flclash|bettbox|shadowrocket|sing-box|clashx|surge|auto) ;;
-        *) echo "FAIL:用法: claude-switch.sh set-client <clash-verge|flclash|bettbox|shadowrocket|sing-box|clashx|surge|auto>"; return 1 ;;
+        clash-verge|flclash|bettbox|mihomo-party|shadowrocket|sing-box|clashx|surge|auto) ;;
+        *) echo "FAIL:用法: claude-switch.sh set-client <clash-verge|flclash|bettbox|mihomo-party|shadowrocket|sing-box|clashx|surge|auto>"; return 1 ;;
     esac
     target="${CLAUDE_SWITCHER_CORE:-}"
     if [ -z "$target" ]; then
@@ -1749,7 +1756,7 @@ set_client() {
 # 只读输出当前代理客户端(供 UI 下拉高亮),同时列出全部支持项
 get_client() {
     echo "client=$PROXY_MODE"
-    echo "clients=clash-verge,flclash,bettbox,shadowrocket,sing-box,clashx,surge"
+    echo "clients=clash-verge,flclash,bettbox,mihomo-party,shadowrocket,sing-box,clashx,surge"
 }
 
 # 地区自适应:按当前出口国家一键重设 国家/时区/地区格式(换了国家节点后运行)

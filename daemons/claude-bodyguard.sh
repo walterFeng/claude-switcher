@@ -23,8 +23,8 @@ clashx_alive() {
         || pgrep -x 'ClashX Meta' >/dev/null 2>&1
 }
 
-# TUN 在线判定:存在 fake-ip 网段地址即视为 TUN 已接管
-ifconfig 2>/dev/null | grep -q 'inet 198\.18\.' || ok=0
+# TUN 在线判定:存在 fake-ip 网段(198.18.0.0/15)地址即视为 TUN 已接管
+ifconfig 2>/dev/null | grep -Eq 'inet 198\.1[89]\.' || ok=0
 
 # 内核在线判定:按安装时识别的客户端分派
 case "$MODE" in
@@ -34,6 +34,8 @@ case "$MODE" in
         { pgrep -f FlClashCore >/dev/null 2>&1 || pgrep -x FlClash >/dev/null 2>&1; } || ok=0 ;;
     bettbox)
         { pgrep -f BettboxCore >/dev/null 2>&1 || pgrep -x Bettbox >/dev/null 2>&1; } || ok=0 ;;
+    mihomo-party)
+        pgrep -f '(Mihomo|Clash) Party\.app/Contents/Resources/sidecar/mihomo' >/dev/null 2>&1 || ok=0 ;;
     shadowrocket)
         # launchd 环境下 scutil 可能查不到 VPN 行,查不到时以 TUN 判定为准(避免误杀)
         nc=$(scutil --nc list 2>/dev/null)
