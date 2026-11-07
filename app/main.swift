@@ -97,6 +97,7 @@ final class VM: ObservableObject {
         ("clash-verge", "Clash Verge"),
         ("flclash", "FlClash"),
         ("bettbox", "Bettbox"),
+        ("mihomo-party", "Mihomo Party"),
         ("shadowrocket", "Shadowrocket"),
         ("sing-box", "sing-box"),
         ("clashx", "ClashX"),
